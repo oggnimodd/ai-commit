@@ -44,7 +44,6 @@ pub fn get_staged_diff(repo_path: &Path) -> Result<String, anyhow::Error> {
         &["status", "--porcelain", "--untracked-files=no"],
     )
     .context("Failed to get git status for diff")?;
-
     let status_stdout = str::from_utf8(&status_output.stdout)
         .context("Failed to read git status output as UTF-8 for diff")?
         .trim();
@@ -57,11 +56,9 @@ pub fn get_staged_diff(repo_path: &Path) -> Result<String, anyhow::Error> {
 
     let diff_output = execute_git_command(repo_path, &["diff", "--staged"])
         .context("Failed to get staged git diff")?;
-
     let diff_stdout = str::from_utf8(&diff_output.stdout)
         .context("Failed to read git diff output as UTF-8")?
         .to_string();
-
     Ok(diff_stdout)
 }
 
@@ -107,7 +104,6 @@ pub struct StagedChangesSummary {
 fn get_binary_status_map(repo_path: &Path) -> Result<HashMap<String, bool>> {
     let numstat_output_bytes =
         execute_git_command_for_summary_bytes(repo_path, &["diff", "--staged", "--numstat", "-z"])?;
-
     let mut binary_map = HashMap::new();
 
     if numstat_output_bytes.is_empty() || numstat_output_bytes.iter().all(|&b| b == 0) {
@@ -125,7 +121,6 @@ fn get_binary_status_map(repo_path: &Path) -> Result<HashMap<String, bool>> {
                 first_segment_bytes
             )
         })?;
-
         let parts: Vec<&str> = first_segment_str.split('\t').collect();
 
         if parts.len() == 3 {
@@ -147,7 +142,6 @@ fn get_binary_status_map(repo_path: &Path) -> Result<HashMap<String, bool>> {
                         first_segment_str
                     )
                 })?;
-
                 let new_path_str = str::from_utf8(new_path_bytes).with_context(|| {
                     format!(
                         "Non-UTF8 new_path (empty third part numstat): {:?}",
@@ -188,7 +182,6 @@ fn get_binary_status_map(repo_path: &Path) -> Result<HashMap<String, bool>> {
             let added_str = parts[0];
             let deleted_str = parts[1];
             let is_binary_stats = added_str == "-" && deleted_str == "-";
-
             let _old_path_bytes = fields_iter.next().with_context(|| {
                 format!(
                     "Expected old_path (2-part numstat) for segment: '{}'",
@@ -201,7 +194,6 @@ fn get_binary_status_map(repo_path: &Path) -> Result<HashMap<String, bool>> {
                     first_segment_str
                 )
             })?;
-
             let new_path_str = str::from_utf8(new_path_bytes).with_context(|| {
                 format!("Non-UTF8 new_path (2-part numstat): {:?}", new_path_bytes)
             })?;
@@ -214,7 +206,6 @@ fn get_binary_status_map(repo_path: &Path) -> Result<HashMap<String, bool>> {
 
 pub fn get_staged_changes_summary(repo_path: &Path) -> Result<StagedChangesSummary> {
     let mut summary = StagedChangesSummary::default();
-
     let status_check_output_bytes = execute_git_command_for_summary_bytes(
         repo_path,
         &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
@@ -317,7 +308,6 @@ pub fn get_staged_changes_summary(repo_path: &Path) -> Result<StagedChangesSumma
                 let struct_change_desc =
                     format!("type changed for: {}", current_path_for_processing);
                 summary.structure_changes.push(struct_change_desc);
-
                 let is_binary_file = binary_map
                     .get(current_path_for_processing)
                     .copied()
@@ -348,11 +338,41 @@ pub fn get_staged_changes_summary(repo_path: &Path) -> Result<StagedChangesSumma
             }
         }
     }
-
     summary.binary_file_changes.sort();
     summary.structure_changes.sort();
-
     Ok(summary)
+}
+
+pub fn commit_staged_files(repo_path: &Path, message: &str) -> Result<String, anyhow::Error> {
+    if message.trim().is_empty() {
+        bail!("Commit message cannot be empty.");
+    }
+
+    let output = Command::new("git")
+        .current_dir(repo_path)
+        .args(&["commit", "-m", message])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("Failed to execute 'git commit -m ...' in {:?}", repo_path))?;
+
+    let stdout_str = str::from_utf8(&output.stdout)
+        .unwrap_or("[non-utf8 stdout from git commit]")
+        .trim();
+    let stderr_str = str::from_utf8(&output.stderr)
+        .unwrap_or("[non-utf8 stderr from git commit]")
+        .trim();
+
+    if !output.status.success() {
+        bail!(
+            "Git commit failed with status {}:\nStdout: {}\nStderr: {}",
+            output.status,
+            stdout_str,
+            stderr_str
+        );
+    }
+
+    Ok(stdout_str.to_string())
 }
 
 #[cfg(test)]
@@ -769,11 +789,8 @@ mod tests {
         let repo_path = temp_dir.path();
         setup_git_repo(repo_path)?;
         create_and_commit_file(repo_path, "src/old_file.bin", &[0x01, 0x00, 0x02, 0xAB])?;
-
         stage_rename(repo_path, "src/old_file.bin", "src/new_file.bin")?;
-
         let summary = get_staged_changes_summary(repo_path)?;
-
         let expected = StagedChangesSummary {
             binary_file_changes: vec![
                 "renamed binary file: src/old_file.bin to src/new_file.bin".to_string(),
@@ -781,6 +798,57 @@ mod tests {
             structure_changes: vec!["renamed: src/old_file.bin to src/new_file.bin".to_string()],
         };
         assert_eq!(summary, expected);
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit_staged_files_integration() -> Result<(), anyhow::Error> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+        setup_git_repo(repo_path)?;
+
+        stage_new_file(repo_path, "commit_me.txt", b"content to commit")?;
+
+        let commit_message = "feat: Add commit_me.txt";
+        let commit_output = commit_staged_files(repo_path, commit_message)?;
+
+        assert!(
+            commit_output.contains("main") || commit_output.contains("master"),
+            "Commit output did not contain branch name: {}",
+            commit_output
+        );
+        assert!(
+            commit_output.contains(commit_message),
+            "Commit output did not contain commit message: {}",
+            commit_output
+        );
+        assert!(
+            commit_output.contains("1 file changed"),
+            "Commit output did not indicate 1 file changed: {}",
+            commit_output
+        );
+
+        let log_output_cmd = execute_git_command(repo_path, &["log", "-1", "--pretty=%B"])?;
+        let log_stdout = str::from_utf8(&log_output_cmd.stdout)?.trim();
+        assert_eq!(log_stdout, commit_message);
+
+        temp_dir.close()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_commit_staged_files_empty_message_fails() -> Result<(), anyhow::Error> {
+        let temp_dir = TempDir::new()?;
+        let repo_path = temp_dir.path();
+        setup_git_repo(repo_path)?;
+        stage_new_file(repo_path, "another.txt", b"content")?;
+
+        let result = commit_staged_files(repo_path, "   ");
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(e.to_string().contains("Commit message cannot be empty."));
+        }
         temp_dir.close()?;
         Ok(())
     }

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::Parser;
 use std::env;
 
@@ -13,7 +14,6 @@ mod prompt;
 struct Args {
     #[arg(short, long)]
     interactive: bool,
-
     #[arg(short = 'a', long)]
     amend: bool,
 }
@@ -43,23 +43,12 @@ async fn main() -> anyhow::Result<()> {
     let mode = args.determine_mode();
     println!("ai-commit is running in: {:?}", mode);
 
-    let current_repo_path = env::current_dir()?;
+    let current_repo_path = env::current_dir().context("Failed to get current directory")?;
 
     match mode {
         AiCommitMode::Auto => {
-            println!("Executing Auto mode logic...");
-
             let diff_text = match git::get_staged_diff(&current_repo_path) {
-                Ok(diff) => {
-                    if diff.trim().is_empty() {
-                        println!(
-                            "\nNo textual diff detected for staged changes, but files might be staged (e.g. mode changes or only binary/structure changes)."
-                        );
-                    } else {
-                        println!("\nStaged Diff:\n{}", diff);
-                    }
-                    diff
-                }
+                Ok(diff) => diff,
                 Err(e) => {
                     eprintln!("{}", e);
                     return Ok(());
@@ -67,37 +56,47 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let changes_summary = match git::get_staged_changes_summary(&current_repo_path) {
-                Ok(summary) => {
-                    println!("\nStaged Changes Summary:");
-                    if summary.binary_file_changes.is_empty()
-                        && summary.structure_changes.is_empty()
-                    {
-                        println!(
-                            "  No specific binary or structural changes detected by summary logic."
-                        );
-                    } else {
-                        if !summary.binary_file_changes.is_empty() {
-                            println!("  Binary file changes: {:?}", summary.binary_file_changes);
-                        }
-                        if !summary.structure_changes.is_empty() {
-                            println!("  Structure changes: {:?}", summary.structure_changes);
-                        }
-                    }
-                    summary
-                }
+                Ok(summary) => summary,
                 Err(e) => {
                     eprintln!("Error getting staged changes summary: {}", e);
-                    return Err(e);
+                    return Err(e.into());
                 }
             };
 
-            if diff_text.trim().is_empty()
-                && changes_summary.binary_file_changes.is_empty()
-                && changes_summary.structure_changes.is_empty()
-            {
-                println!(
-                    "Staged changes detected, but they appear to be non-textual and not categorized as binary/structural by current logic (e.g., mode changes only)."
-                );
+            let prompt_str = prompt::build_prompt(&diff_text, &changes_summary, 1, None);
+
+            println!("🤖 Generating commit message from AI...");
+
+            let suggestions = match ai::generate_text(&prompt_str, 1).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error generating commit message from AI: {}", e);
+                    return Err(e.into());
+                }
+            };
+
+            let commit_message = suggestions.get(0).map(String::as_str).unwrap_or("").trim();
+
+            if commit_message.is_empty() {
+                eprintln!("❌ AI returned an empty or invalid commit message. Cannot commit.");
+                return Err(anyhow::anyhow!(
+                    "AI returned an empty or invalid commit message."
+                ));
+            }
+
+            println!("✨ AI Suggests: \"{}\"", commit_message);
+
+            match git::commit_staged_files(&current_repo_path, commit_message) {
+                Ok(commit_output) => {
+                    println!("\n✅ Automatically committed with AI-generated message:");
+                    println!("{}", commit_output);
+                }
+                Err(e) => {
+                    eprintln!("\n❌ Failed to commit staged files: {}", e);
+                    eprintln!("Generated message was: \"{}\"", commit_message);
+                    eprintln!("Please commit manually or try again.");
+                    return Err(e.into());
+                }
             }
         }
         AiCommitMode::Interactive => {
