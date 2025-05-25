@@ -2,6 +2,7 @@ use anyhow::Context;
 use clap::Parser;
 use inquire::{InquireError, Select};
 use std::env;
+use std::path::PathBuf;
 
 mod ai;
 mod git;
@@ -15,7 +16,6 @@ mod prompt;
 struct Args {
     #[arg(short, long)]
     interactive: bool,
-
     #[arg(short = 'a', long)]
     amend: bool,
 }
@@ -39,6 +39,81 @@ impl Args {
     }
 }
 
+const REGENERATE_OPTION: &str = "🔄 Regenerate suggestions";
+const CANCEL_OPTION: &str = "❌ Cancel and exit";
+
+async fn interactive_commit_loop(
+    current_repo_path: &PathBuf,
+    diff_text: &str,
+    changes_summary: &git::StagedChangesSummary,
+    num_variations_to_request: u32,
+) -> anyhow::Result<Option<String>> {
+    loop {
+        let prompt_str =
+            prompt::build_prompt(diff_text, changes_summary, num_variations_to_request, None);
+        println!(
+            "🤖 Generating {} commit message variations from AI...",
+            num_variations_to_request
+        );
+
+        let suggestions = match ai::generate_text(&prompt_str, num_variations_to_request).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error generating commit messages from AI: {}", e);
+
+                let error_options = vec![REGENERATE_OPTION, CANCEL_OPTION];
+                match Select::new("AI failed. What would you like to do?", error_options).prompt() {
+                    Ok(REGENERATE_OPTION) => continue,
+                    Ok(CANCEL_OPTION) | Err(InquireError::OperationCanceled) => return Ok(None),
+                    Ok(_) => unreachable!(),
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        };
+
+        if suggestions.is_empty() {
+            eprintln!("❌ AI returned no suggestions.");
+            let empty_options = vec![REGENERATE_OPTION, CANCEL_OPTION];
+            match Select::new(
+                "AI returned no suggestions. What would you like to do?",
+                empty_options,
+            )
+            .prompt()
+            {
+                Ok(REGENERATE_OPTION) => continue,
+                Ok(CANCEL_OPTION) | Err(InquireError::OperationCanceled) => return Ok(None),
+                Ok(_) => unreachable!(),
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        let mut options: Vec<String> = suggestions.clone();
+        options.push(REGENERATE_OPTION.to_string());
+        options.push(CANCEL_OPTION.to_string());
+
+        match Select::new("Select a commit message (or action):", options).prompt() {
+            Ok(selected_item) => {
+                if selected_item == REGENERATE_OPTION {
+                    continue;
+                } else if selected_item == CANCEL_OPTION {
+                    println!("❌ Commit process cancelled by user.");
+                    return Ok(None);
+                } else {
+                    return Ok(Some(selected_item));
+                }
+            }
+            Err(InquireError::OperationCanceled) => {
+                println!("❌ Commit message selection cancelled.");
+                return Ok(None);
+            }
+            Err(e) => {
+                eprintln!("Error during selection: {}", e);
+                return Err(e.into());
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -56,7 +131,6 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
             };
-
             let changes_summary = match git::get_staged_changes_summary(&current_repo_path) {
                 Ok(summary) => summary,
                 Err(e) => {
@@ -106,7 +180,6 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
             };
-
             let changes_summary = match git::get_staged_changes_summary(&current_repo_path) {
                 Ok(summary) => summary,
                 Err(e) => {
@@ -116,46 +189,33 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let num_variations_to_request = 5;
-            let prompt_str = prompt::build_prompt(
+
+            match interactive_commit_loop(
+                &current_repo_path,
                 &diff_text,
                 &changes_summary,
                 num_variations_to_request,
-                None,
-            );
-
-            println!(
-                "🤖 Generating {} commit message variations from AI...",
-                num_variations_to_request
-            );
-            let suggestions = match ai::generate_text(&prompt_str, num_variations_to_request).await
+            )
+            .await
             {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Error generating commit messages from AI: {}", e);
-                    return Err(e.into());
-                }
-            };
-
-            if suggestions.is_empty() {
-                eprintln!("❌ AI returned no suggestions. Please try again or use auto mode.");
-                return Err(anyhow::anyhow!("AI returned no suggestions."));
-            }
-
-            let options: Vec<&str> = suggestions.iter().map(String::as_str).collect();
-
-            match Select::new("Select a commit message:", options).prompt() {
-                Ok(selected_message) => {
+                Ok(Some(selected_message)) => {
                     println!("✨ You selected: \"{}\"", selected_message);
-                    if let Err(e) = git::commit_staged_files(&current_repo_path, selected_message) {
-                        eprintln!("❌ Failed to commit staged files: {}", e);
+                    match git::commit_staged_files(&current_repo_path, &selected_message) {
+                        Ok(commit_output) => {
+                            println!("\n✅ Committed with selected message:");
+                            println!("{}", commit_output);
+                        }
+                        Err(e) => {
+                            eprintln!("\n❌ Failed to commit staged files: {}", e);
+                            eprintln!("Selected message was: \"{}\"", selected_message);
+                            return Err(e.into());
+                        }
                     }
                 }
-                Err(InquireError::OperationCanceled) => {
-                    println!("❌ Commit message selection cancelled.");
-                }
+                Ok(None) => {}
                 Err(e) => {
-                    eprintln!("Error during selection: {}", e);
-                    return Err(e.into());
+                    eprintln!("An error occurred in the interactive loop: {}", e);
+                    return Err(e);
                 }
             }
         }
