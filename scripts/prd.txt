@@ -64,7 +64,7 @@ ai-commit is a command-line interface (CLI) tool written in Rust, designed for p
     - AI API client module (using a Rust HTTP client like `reqwest` to interact with the Google Gemini API).
 - **Configuration**:
     - API key: Read from `GEMINI_API_KEY` environment variable.
-    - Gemini Model ID (e.g., "gemini-1.5-flash-latest"): Hardcoded in the source, easily changeable by the user.
+    - Gemini Model ID (e.g., "gemini-2-0-flash"): Hardcoded in the source, easily changeable by the user.
     - Commit conventions (types, descriptions, length constraints): Defined as constants/static structures in the Rust source code.
 - **Data Models**:
     - Representation of staged changes/diff (including file status, text diffs, and binary file info, derived from `git` CLI output).
