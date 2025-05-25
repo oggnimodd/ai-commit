@@ -1,32 +1,33 @@
+<prd.txt>
 # PRD: ai-commit (Personal AI-Powered Git Commit Tool)
 
 # Overview
 ai-commit is a command-line interface (CLI) tool written in Rust, designed for personal use, that automates or assists in generating Git commit messages using the Google Gemini API. It aims to streamline the commit process by analyzing staged code changes and proposing relevant, conventionally formatted commit messages, saving time and promoting descriptive commits. This tool is intended for a single user (the developer) and prioritizes speed and a tight feedback loop.
 
 # Core Features
-- **Staged Changes Detection**: Automatically detect if there are any files staged for commit in the current Git repository.
+- **Staged Changes Detection**: Automatically detect if there are any files staged for commit in the current Git repository using `git` CLI commands.
 - **Diff Generation**:
-    - Generate a diff of staged changes.
-    - Prioritize text-based changes. For binary files, analyze based on filename changes (e.g., added, deleted, renamed) and status.
-    - Include information about folder structure changes (e.g., moved, renamed files/directories) to provide richer context to the AI.
+    - Generate a diff of staged changes using `git` CLI commands.
+    - Prioritize text-based changes. For binary files, analyze based on filename changes (e.g., added, deleted, renamed) and status, derived from `git` CLI output.
+    - Include information about folder structure changes (e.g., moved, renamed files/directories) by parsing `git` CLI output to provide richer context to the AI.
 - **AI Commit Message Generation**:
     - Send the processed diff and structural change information to the Google Gemini API (configurable model, e.g., Gemini Flash 2.0/2.5).
     - Employ prompt engineering to ensure generated messages are consistent, clean, to the point, and follow specified commit conventions (e.g., `feat:`, `fix:`, `chore:`, etc.).
-- **Git Commit Execution**: Execute the `git commit` command with the generated or selected message.
+- **Git Commit Execution**: Execute the `git commit` command (shelling out) with the generated or selected message.
 - **Auto Commit Mode (`ai-commit`)**:
     - Analyze changes, generate a single commit message using the AI.
     - Display a loading indicator during AI interaction.
-    - Automatically commit the staged files with the generated message.
+    - Automatically commit the staged files with the generated message using `git commit`.
 - **Interactive Mode (`ai-commit --interactive`)**:
     - Analyze changes, generate multiple (e.g., 5) commit message variations using the AI.
     - Display a loading indicator during AI interaction.
     - Present the variations to the user in an `inquirer.js`-style terminal interface (navigable with arrow keys, selection with Enter).
     - Include an option to "Regenerate" and fetch 5 new suggestions.
-    - Commit the staged files with the user-selected message.
+    - Commit the staged files with the user-selected message using `git commit`.
 - **Amend Mode (`ai-commit --amend` or `ai-commit -a`)**:
-    - Retrieve the previous commit message.
+    - Retrieve the previous commit message using `git` CLI commands.
     - Generate a new commit message (or multiple for interactive amend) using the AI, providing the previous "bad" message as context in the prompt to guide better suggestions.
-    - Execute `git commit --amend` with the new message.
+    - Execute `git commit --amend` (shelling out) with the new message.
     - Supports both auto (single new suggestion) and interactive (multiple new suggestions) amend operations.
 - **Configurable Commit Conventions**:
     - Commit types (e.g., `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `test`, `build`, `ci`, `perf`, `revert`) and their descriptions (for prompt engineering) are configurable directly in the Rust source code.
@@ -35,95 +36,97 @@ ai-commit is a command-line interface (CLI) tool written in Rust, designed for p
 # User Experience
 - **User Personas**: The primary developer and sole user of this application.
 - **Key User Flows**:
-    1.  User stages files (`git add ...`).
-    2.  User runs `ai-commit` (for auto mode).
-        - Tool shows loading indicator, analyzes, generates message, commits, shows standard git output, exits.
-    3.  User runs `ai-commit --interactive`.
-        - Tool shows loading indicator, analyzes, generates messages, presents options (including "Regenerate"), user selects, tool commits, shows standard git output, exits.
-    4.  User realizes the last commit message was poor. Runs `ai-commit --amend` (or `ai-commit --amend --interactive`).
-        - Tool shows loading indicator, fetches previous message, generates new suggestion(s) using AI (with context of old message), (user selects if interactive), tool amends commit, shows standard git output, exits.
+    1. User stages files (`git add ...`).
+    2. User runs `ai-commit` (for auto mode).
+        - Tool shows loading indicator, analyzes, generates message, commits (via `git` CLI), shows standard git output, exits.
+    3. User runs `ai-commit --interactive`.
+        - Tool shows loading indicator, analyzes, generates messages, presents options (including "Regenerate"), user selects, tool commits (via `git` CLI), shows standard git output, exits.
+    4. User realizes the last commit message was poor. Runs `ai-commit --amend` (or `ai-commit --amend --interactive`).
+        - Tool shows loading indicator, fetches previous message (via `git` CLI), generates new suggestion(s) using AI (with context of old message), (user selects if interactive), tool amends commit (via `git` CLI), shows standard git output, exits.
 - **UI/UX Considerations**:
     - Simple, clear command-line output.
-    - Fast execution is paramount; "should feel like I am not using AI."
+    - Fast execution is paramount; "should feel like I am not using AI." The overhead of shelling out to `git` is expected to be negligible.
     - Loading indicators for any operation involving AI calls.
     - Clear presentation of message options in interactive mode using a suitable Rust TUI library.
-    - Error handling messages should be informative enough for the user to understand the issue (e.g., "No staged files," "Gemini API key missing," "Network error").
+    - Error handling messages should be informative enough for the user to understand the issue (e.g., "No staged files," "Gemini API key missing," "Network error," "Git command not found").
 
 # Technical Architecture
 - **System Components**:
     - CLI interface (using a Rust crate like `clap` for argument parsing).
     - Git interaction module:
-        - **Primary Goal**: Use a high-performance Rust Git library like `git2-rs` for direct `.git` folder interaction (detecting staged files, generating diffs, getting previous commit message, executing commits/amends). This is preferred for speed and robustness over shelling out.
-        - **Alternative**: If `git2-rs` proves overly complex for initial MVP features related to diff generation or commit execution, shelling out to `git` CLI commands (`git diff --staged`, `git commit`, `git log -1 --pretty=%B`) can be a temporary fallback.
-        - Module to determine folder/file structure changes (e.g., by comparing trees or analyzing diff paths).
+        - Utilizes direct shelling out to the `git` command-line interface for all Git operations. This includes:
+            - Detecting staged files (e.g., using `git status --porcelain --untracked-files=no` or `git diff --staged --name-only`).
+            - Generating diffs of staged changes (e.g., using `git diff --staged`).
+            - Retrieving the previous commit message (e.g., using `git log -1 --pretty=%B`).
+            - Executing commits and amends (e.g., using `git commit -m "..."` and `git commit --amend -m "...").
+        - This approach simplifies development by leveraging the existing robust `git` CLI, which is typically very fast.
+    - Module to determine folder/file structure changes (e.g., by parsing the output of `git diff --staged --summary` or similar `git` commands that indicate renames/moves).
     - AI API client module (using a Rust HTTP client like `reqwest` to interact with the Google Gemini API).
-    - Configuration:
-        - API key: Read from `GEMINI_API_KEY` environment variable.
-        - Gemini Model ID (e.g., "gemini-1.5-flash-latest"): Hardcoded in the source, easily changeable by the user.
-        - Commit conventions (types, descriptions, length constraints): Defined as constants/static structures in the Rust source code.
+- **Configuration**:
+    - API key: Read from `GEMINI_API_KEY` environment variable.
+    - Gemini Model ID (e.g., "gemini-1.5-flash-latest"): Hardcoded in the source, easily changeable by the user.
+    - Commit conventions (types, descriptions, length constraints): Defined as constants/static structures in the Rust source code.
 - **Data Models**:
-    - Representation of staged changes/diff (including file status, text diffs, and binary file info).
-    - Representation of folder structure changes.
+    - Representation of staged changes/diff (including file status, text diffs, and binary file info, derived from `git` CLI output).
+    - Representation of folder structure changes (derived from `git` CLI output).
     - Structure for API requests (prompt, model choice) /responses (multiple message suggestions).
 - **APIs and Integrations**:
     - Google Gemini API for text generation.
-    - Integration with the local Git environment.
+    - Integration with the local Git environment via shelling out to `git` CLI.
 - **Prompt Engineering Strategy**:
     - The prompt sent to Gemini will be crucial. It will include:
-        - The generated diff content (text changes).
-        - A summary of binary file changes (e.g., "added image.png", "deleted video.mp4").
-        - A summary of folder structure changes (e.g., "moved src/old_dir to src/new_dir").
+        - The generated diff content (text changes from `git diff --staged`).
+        - A summary of binary file changes (e.g., "added image.png", "deleted video.mp4", derived from `git diff --staged` output).
+        - A summary of folder structure changes (e.g., "moved src/old_dir to src/new_dir", derived from `git diff --staged --summary` output).
         - Clear instructions on the desired commit message format:
-            ```
-            Analyze the following code changes and repository structure modifications.
-            Generate [N] Git commit message(s).
+          ```
+          Analyze the following code changes and repository structure modifications. Generate [N] Git commit message(s).
+          Each message MUST follow this format:
+          <type>: <description>
 
-            Each message MUST follow this format:
-            <type>: <description>
+          Available <type>s are:
+          - feat: A new feature (e.g., adding a new endpoint, a new UI component).
+          - fix: A bug fix (e.g., correcting a calculation error, addressing a crash).
+          - docs: Documentation only changes (e.g., updating README, API docs).
+          - style: Changes that do not affect the meaning of the code (white-space, formatting, missing semi-colons, etc).
+          - refactor: A code change that neither fixes a bug nor adds a feature (e.g., renaming a variable, improving code structure).
+          - test: Adding missing tests or correcting existing tests.
+          - chore: Changes to the build process or auxiliary tools and libraries such as dependency updates, scripts.
+          - build: Changes that affect the build system or external dependencies (e.g., Gulp, Broccoli, NPM).
+          - ci: Changes to CI configuration files and scripts (e.g., GitHub Actions, Travis).
+          - perf: A code change that improves performance.
+          - revert: Reverts a previous commit.
+          - readme: Specifically for changes to the README file.
 
-            Available <type>s are:
-            - feat: A new feature (e.g., adding a new endpoint, a new UI component).
-            - fix: A bug fix (e.g., correcting a calculation error, addressing a crash).
-            - docs: Documentation only changes (e.g., updating README, API docs).
-            - style: Changes that do not affect the meaning of the code (white-space, formatting, missing semi-colons, etc).
-            - refactor: A code change that neither fixes a bug nor adds a feature (e.g., renaming a variable, improving code structure).
-            - test: Adding missing tests or correcting existing tests.
-            - chore: Changes to the build process or auxiliary tools and libraries such as dependency updates, scripts.
-            - build: Changes that affect the build system or external dependencies (e.g., Gulp, Broccoli, NPM).
-            - ci: Changes to CI configuration files and scripts (e.g., GitHub Actions, Travis).
-            - perf: A code change that improves performance.
-            - revert: Reverts a previous commit.
-            - readme: Specifically for changes to the README file.
+          The AI should choose the <type> that best describes the overall changes.
+          The <description> should be concise, start with a verb in the imperative mood if possible, and be between [MIN_CHARS] and [MAX_CHARS] characters.
+          Do not include any other explanatory text, just the commit message(s).
 
-            The AI should choose the <type> that best describes the overall changes.
-            The <description> should be concise, start with a verb in the imperative mood if possible, and be between [MIN_CHARS] and [MAX_CHARS] characters.
-            Do not include any other explanatory text, just the commit message(s).
+          For amend operations, the prompt will additionally include:
+          "The previous commit message was: '[PREVIOUS_MESSAGE]'. Please generate a new, improved message based on the changes, considering why the previous one might have been suboptimal."
 
-            For amend operations, the prompt will additionally include:
-            "The previous commit message was: '[PREVIOUS_MESSAGE]'. Please generate a new, improved message based on the changes, considering why the previous one might have been suboptimal."
-
-            Diff:
-            ---
-            [DIFF_CONTENT]
-            ---
-            Binary file changes:
-            [BINARY_CHANGES_SUMMARY]
-            ---
-            Folder structure changes:
-            [FOLDER_STRUCTURE_CHANGES_SUMMARY]
-            ---
-            ```
+          Diff:
+          ---
+          [DIFF_CONTENT]
+          ---
+          Binary file changes:
+          [BINARY_CHANGES_SUMMARY]
+          ---
+          Folder structure changes:
+          [FOLDER_STRUCTURE_CHANGES_SUMMARY]
+          ---
+          ```
         - (Note: `[N]`, `[MIN_CHARS]`, `[MAX_CHARS]`, `[PREVIOUS_MESSAGE]`, `[DIFF_CONTENT]`, `[BINARY_CHANGES_SUMMARY]`, `[FOLDER_STRUCTURE_CHANGES_SUMMARY]` are placeholders).
-- **Infrastructure Requirements**: Standard development machine capable of running Rust binaries and Git. Requires internet access to reach the Gemini API.
+- **Infrastructure Requirements**: Standard development machine capable of running Rust binaries and Git. `git` must be installed and accessible in the system's PATH. Requires internet access to reach the Gemini API.
 
 # Development Roadmap
 - **Phase 1 (MVP)**:
-    - Implement core Git interaction: detect staged files, generate diff (text-focused, basic binary/folder structure info).
+    - Implement core Git interaction using `git` CLI: detect staged files, generate diff (text-focused, basic binary/folder structure info by parsing `git` output).
     - Implement Google Gemini API integration: send diff, receive single message.
-    - Implement Auto Commit mode (`ai-commit`): tie detection, API call, and `git commit` together.
+    - Implement Auto Commit mode (`ai-commit`): tie detection, API call, and `git commit` (shelling out) together.
     - Basic loading indicator for AI calls.
     - Handle API key via `GEMINI_API_KEY` environment variable. Error if not present.
-    - Basic error handling (no staged files, API errors).
+    - Basic error handling (no staged files, API errors, `git` not found).
     - Hardcode initial commit conventions and Gemini model in source.
     - CLI argument parsing for basic mode.
 - **Phase 2**:
@@ -131,36 +134,37 @@ ai-commit is a command-line interface (CLI) tool written in Rust, designed for p
         - Request multiple message variations from the API.
         - Implement TUI for selection (e.g., using `dialoguer` or `inquire-rs`).
         - Implement "Regenerate" option.
-        - Commit with the selected message.
+        - Commit with the selected message (via `git` CLI).
     - Implement Amend Mode (`ai-commit --amend` and `ai-commit --amend --interactive`):
-        - Fetch previous commit message.
+        - Fetch previous commit message (via `git` CLI).
         - Adapt prompt for amend context.
-        - Execute `git commit --amend`.
-    - Improve diff generation to better capture binary file changes and folder structure changes.
+        - Execute `git commit --amend` (via `git` CLI).
+    - Improve diff parsing to better capture binary file changes and folder structure changes from `git` CLI output.
     - Refine prompt engineering based on initial results.
     - More robust error handling and user feedback.
 - **Phase 3 (Future Enhancements - User-driven)**:
     - Option to customize the prompt sent to the AI further (if needed, via code changes).
-    - Handling of extremely large diffs if they pose issues for Gemini or performance (e.g., summarization strategies, though Gemini's large context window should mitigate this).
-    - Deeper `gitoxide` integration if it matures for commit/diff operations and offers benefits.
+    - Handling of extremely large diffs if they pose issues for Gemini or performance (e.g., summarization strategies for the content sent to Gemini, though Gemini's large context window should mitigate this).
 
 # Logical Dependency Chain
-1.  **Git Interaction (Detection & Diff)**: Must identify staged changes and generate comprehensive diff content (text, binary info, folder structure). Foundational.
+1.  **Git Interaction (Detection & Diff)**: Must identify staged changes and generate comprehensive diff content (text, binary info, folder structure) by shelling out to `git` CLI and parsing its output. Foundational.
 2.  **AI API Integration**: Must send the prepared context to Gemini and receive responses. Depends on Git interaction.
 3.  **Message Generation Logic**: Process API response into usable commit messages, adhering to conventions. Depends on API integration.
 4.  **CLI Structure & Argument Parsing**: Basic CLI framework to invoke modes.
-5.  **Auto Commit Mode**: Combines 1, 2, 3, and Git commit execution.
+5.  **Auto Commit Mode**: Combines 1, 2, 3, and Git commit execution (via `git` CLI).
 6.  **Interactive Mode**: Builds on 1, 2, 3, adding user interaction for selection and regeneration.
-7.  **Amend Mode**: Builds on 1, 2, 3, adding logic to fetch previous commit and use `git commit --amend`.
+7.  **Amend Mode**: Builds on 1, 2, 3, adding logic to fetch previous commit and use `git commit --amend` (via `git` CLI).
 
 Getting to a usable Auto Commit mode (Phase 1) provides immediate value. Interactive and Amend modes build upon this core.
 
 # Risks and Mitigations
 - **Technical Challenges**:
-    - *Risk*: Difficulty with advanced Git operations (like detailed folder structure diffing or robust amend) using `git2-rs`. *Mitigation*: Start with simpler diffs/operations. If `git2-rs` is too complex for certain MVP aspects, use shelling out to `git` CLI as a temporary fallback for those specific parts, aiming to replace with `git2-rs` later for performance/robustness. Evaluate `gitoxide` periodically for future integration.
+    - *Risk*: Parsing `git` CLI output can be brittle if Git's output format changes unexpectedly across versions for less common commands/flags. *Mitigation*: Use well-established `git` commands and flags known for stable output (e.g., `--porcelain` flags, standard diff formats). Thoroughly test parsing logic across common Git versions if possible.
+    - *Risk*: Slight performance overhead compared to direct Git library integration due to the cost of process creation for shelling out. *Mitigation*: `git` CLI itself is highly optimized. For typical personal use cases and diff sizes, this overhead is expected to be negligible and well within the "feels fast" goal. Focus on efficient parsing of the `git` output in Rust.
+    - *Risk*: Dependency on `git` being installed and accessible in the system's PATH. *Mitigation*: Provide a clear error message on startup or when a `git` command fails if `git` is not found. This is a standard prerequisite for most Git-related developer tools.
     - *Risk*: Complexity of interacting with the Google Gemini API and handling varied responses or errors. *Mitigation*: Use `reqwest` with thorough error handling. Start with simpler API call patterns.
     - *Risk*: Gemini API rate limits or unexpected costs if usage becomes very high (unlikely for personal tool but good to be aware of free tier limits). *Mitigation*: Monitor usage. The chosen Flash models are generally cost-effective.
-    - *Risk*: Performance of diff generation for very large commits (hundreds of files) impacting the "feels fast" goal. *Mitigation*: Optimize diff generation. Rely on Rust's performance and efficient libraries. Gemini's large context window helps avoid client-side truncation for the API call itself.
+    - *Risk*: Performance of processing output from `git diff` for very large commits (hundreds of files) impacting the "feels fast" goal. *Mitigation*: `git diff` itself is highly optimized. Focus on efficient processing of its output in Rust. Gemini's large context window helps avoid client-side truncation for the API call itself.
 - **Quality of Generated Messages**:
     - *Risk*: AI generates irrelevant, verbose, or poorly typed commit messages despite prompt engineering. *Mitigation*: Iterative prompt refinement is key. The "code as configuration" allows easy tweaking of type descriptions and prompt structure. Interactive mode and Amend mode provide user control and recovery.
 - **API Key Management**:
@@ -172,3 +176,4 @@ Getting to a usable Auto Commit mode (Phase 1) provides immediate value. Interac
 - **Future Considerations (Self-Directed)**:
     - Pre-commit hook integration (though `ai-commit` is manually invoked, this could be an alternative workflow).
     - Deeper analysis of code semantics (beyond diffs) if feasible and desired for even better messages (highly advanced).
+</prd.txt>
