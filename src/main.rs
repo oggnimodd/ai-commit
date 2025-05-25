@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::path::Path;
 
 mod ai;
 mod git;
@@ -45,7 +46,20 @@ async fn main() -> anyhow::Result<()> {
 
     match mode {
         AiCommitMode::Auto => {
-            println!("Executing Auto mode logic (placeholder)...");
+            println!("Executing Auto mode logic...");
+            match git::get_staged_diff(Path::new(".")) {
+                Ok(diff) => {
+                    if diff.is_empty() {
+                        println!("No changes to commit or diff is empty.");
+                    } else {
+                        println!("\nStaged Diff:\n{}", diff);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error getting staged diff: {}", e);
+                    return Err(e);
+                }
+            }
         }
         AiCommitMode::Interactive => {
             println!("Executing Interactive mode logic (placeholder)...");
