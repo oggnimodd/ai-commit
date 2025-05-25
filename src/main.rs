@@ -6,13 +6,17 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 mod ai;
+mod diff;
 mod git;
 mod prompt;
 
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "ai-commit: A personal AI-powered Git commit tool.\n\nThis CLI tool uses the Google Gemini API to automate or assist in\n generating Git commit messages by analyzing staged code changes.\nIt prioritizes speed and a tight feedback loop for the solo developer."
+    about = "ai-commit: A personal AI-powered Git commit tool.\n\n\
+             This CLI tool uses the Google Gemini API to automate or assist in\n \
+             generating Git commit messages by analyzing staged code changes.\n\
+             It prioritizes speed and a tight feedback loop for the solo developer."
 )]
 struct Args {
     #[arg(short, long)]
@@ -45,8 +49,8 @@ const REGENERATE_OPTION: &str = "🔄 Regenerate suggestions";
 const CANCEL_OPTION: &str = "❌ Cancel and exit";
 
 async fn interactive_commit_loop(
-    _current_repo_path: &PathBuf,
-    diff_text: &str,
+    _repo_path: &PathBuf,
+    preprocessed_diff_text: &str,
     changes_summary: &git::StagedChangesSummary,
     num_variations_to_request: u32,
     previous_message: Option<&str>,
@@ -54,11 +58,17 @@ async fn interactive_commit_loop(
 ) -> anyhow::Result<Option<String>> {
     loop {
         let prompt_str = prompt::build_prompt(
-            diff_text,
+            preprocessed_diff_text,
             changes_summary,
             num_variations_to_request,
             previous_message,
         );
+
+        if env::var("AI_COMMIT_LOG_PROMPT").is_ok() {
+            println!("\n================ PROMPT SENT TO AI (INTERACTIVE) ================");
+            println!("{}", prompt_str);
+            println!("=================================================================\n");
+        }
 
         print!(
             "🤖 Generating {} {}commit message variations from AI... ",
@@ -70,12 +80,8 @@ async fn interactive_commit_loop(
             }
         );
         io::stdout().flush()?;
-
         let suggestions_result = ai::generate_text(&prompt_str, num_variations_to_request).await;
-
-        println!(
-            "\r                                                                               \r"
-        );
+        println!("\r \r");
 
         let suggestions = match suggestions_result {
             Ok(s) => s,
@@ -138,11 +144,10 @@ async fn interactive_commit_loop(
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mode = args.determine_mode();
-
-    let current_repo_path = env::current_dir().context("Failed to get current directory")?;
+    let repo_path = env::current_dir().context("Failed to get current directory")?;
 
     if !matches!(mode, AiCommitMode::Auto | AiCommitMode::Interactive) {
-        if !git::has_staged_files(&current_repo_path).context("Failed to check for staged files")?
+        if !git::has_staged_files(&repo_path).context("Failed to check for staged files")?
             && !matches!(
                 mode,
                 AiCommitMode::AmendAuto | AiCommitMode::AmendInteractive
@@ -154,7 +159,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        if !git::has_staged_files(&current_repo_path).context("Failed to check for staged files")? {
+        if !git::has_staged_files(&repo_path).context("Failed to check for staged files")? {
             println!("ℹ️ No files staged for commit. Nothing to do.");
             return Ok(());
         }
@@ -162,7 +167,7 @@ async fn main() -> anyhow::Result<()> {
 
     match mode {
         AiCommitMode::Auto => {
-            let diff_text = match git::get_staged_diff(&current_repo_path) {
+            let raw_diff_text = match git::get_staged_diff(&repo_path) {
                 Ok(diff) if !diff.is_empty() => diff,
                 Ok(_) => {
                     println!(
@@ -175,7 +180,14 @@ async fn main() -> anyhow::Result<()> {
                     return Err(e);
                 }
             };
-            let changes_summary = match git::get_staged_changes_summary(&current_repo_path) {
+
+            let preprocessed_diff_text = if !raw_diff_text.is_empty() {
+                diff::preprocess_diff_for_ai(&raw_diff_text)
+            } else {
+                String::new()
+            };
+
+            let changes_summary = match git::get_staged_changes_summary(&repo_path) {
                 Ok(summary) => summary,
                 Err(e) => {
                     eprintln!("Error getting staged changes summary: {}", e);
@@ -183,15 +195,19 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            let prompt_str = prompt::build_prompt(&diff_text, &changes_summary, 1, None);
+            let prompt_str =
+                prompt::build_prompt(&preprocessed_diff_text, &changes_summary, 1, None);
+
+            if env::var("AI_COMMIT_LOG_PROMPT").is_ok() {
+                println!("\n================ PROMPT SENT TO AI (AUTO MODE) ================");
+                println!("{}", prompt_str);
+                println!("==============================================================\n");
+            }
 
             print!("🤖 Generating commit message from AI... ");
             io::stdout().flush()?;
-
             let suggestions_result = ai::generate_text(&prompt_str, 1).await;
-            println!(
-                "\r                                                                               \r"
-            );
+            println!("\r \r");
 
             let suggestions = match suggestions_result {
                 Ok(s) => s,
@@ -202,7 +218,6 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let commit_message = suggestions.get(0).map(String::as_str).unwrap_or("").trim();
-
             if commit_message.is_empty() {
                 eprintln!(
                     "❌ AI returned an empty or invalid commit message after filtering. Cannot commit."
@@ -211,10 +226,8 @@ async fn main() -> anyhow::Result<()> {
                     "AI returned an empty or invalid commit message."
                 ));
             }
-
             println!("✨ AI Suggests: \"{}\"", commit_message);
-
-            match git::commit_staged_files(&current_repo_path, commit_message) {
+            match git::commit_staged_files(&repo_path, commit_message) {
                 Ok(commit_output) => {
                     println!("\n✅ Automatically committed with AI-generated message:");
                     println!("{}", commit_output);
@@ -228,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         AiCommitMode::Interactive => {
-            let diff_text = match git::get_staged_diff(&current_repo_path) {
+            let raw_diff_text = match git::get_staged_diff(&repo_path) {
                 Ok(diff) if !diff.is_empty() => diff,
                 Ok(_) => {
                     println!(
@@ -241,7 +254,14 @@ async fn main() -> anyhow::Result<()> {
                     return Err(e);
                 }
             };
-            let changes_summary = match git::get_staged_changes_summary(&current_repo_path) {
+
+            let preprocessed_diff_text = if !raw_diff_text.is_empty() {
+                diff::preprocess_diff_for_ai(&raw_diff_text)
+            } else {
+                String::new()
+            };
+
+            let changes_summary = match git::get_staged_changes_summary(&repo_path) {
                 Ok(summary) => summary,
                 Err(e) => {
                     eprintln!("Error getting staged changes summary: {}", e);
@@ -251,8 +271,8 @@ async fn main() -> anyhow::Result<()> {
             let num_variations_to_request = 5;
 
             match interactive_commit_loop(
-                &current_repo_path,
-                &diff_text,
+                &repo_path,
+                &preprocessed_diff_text,
                 &changes_summary,
                 num_variations_to_request,
                 None,
@@ -262,7 +282,7 @@ async fn main() -> anyhow::Result<()> {
             {
                 Ok(Some(selected_message)) => {
                     println!("✨ You selected: \"{}\"", selected_message);
-                    match git::commit_staged_files(&current_repo_path, &selected_message) {
+                    match git::commit_staged_files(&repo_path, &selected_message) {
                         Ok(commit_output) => {
                             println!("\n✅ Committed with selected message:");
                             println!("{}", commit_output);
@@ -282,7 +302,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         AiCommitMode::AmendAuto | AiCommitMode::AmendInteractive => {
-            let previous_commit_msg = match git::get_previous_commit_message(&current_repo_path)
+            let previous_commit_msg = match git::get_previous_commit_message(&repo_path)
                 .context("Failed to get previous commit message for amend operation")?
             {
                 Some(msg) => msg,
@@ -295,14 +315,21 @@ async fn main() -> anyhow::Result<()> {
                 previous_commit_msg.lines().next().unwrap_or_default()
             );
 
-            let diff_text = match git::get_staged_diff(&current_repo_path) {
+            let raw_diff_text = match git::get_staged_diff(&repo_path) {
                 Ok(diff) => diff,
                 Err(e) => {
                     eprintln!("Error getting staged diff for amend: {}", e);
                     return Err(e);
                 }
             };
-            let changes_summary = match git::get_staged_changes_summary(&current_repo_path) {
+
+            let preprocessed_diff_text = if !raw_diff_text.is_empty() {
+                diff::preprocess_diff_for_ai(&raw_diff_text)
+            } else {
+                String::new()
+            };
+
+            let changes_summary = match git::get_staged_changes_summary(&repo_path) {
                 Ok(summary) => summary,
                 Err(e) => {
                     eprintln!("Error getting staged changes summary for amend: {}", e);
@@ -312,19 +339,26 @@ async fn main() -> anyhow::Result<()> {
 
             if mode == AiCommitMode::AmendAuto {
                 let prompt_str = prompt::build_prompt(
-                    &diff_text,
+                    &preprocessed_diff_text,
                     &changes_summary,
                     1,
                     Some(&previous_commit_msg),
                 );
 
+                if env::var("AI_COMMIT_LOG_PROMPT").is_ok() {
+                    println!(
+                        "\n================ PROMPT SENT TO AI (AMEND AUTO MODE) ================"
+                    );
+                    println!("{}", prompt_str);
+                    println!(
+                        "====================================================================\n"
+                    );
+                }
+
                 print!("🤖 Generating new commit message for amend (auto)... ");
                 io::stdout().flush()?;
-
                 let suggestions_result = ai::generate_text(&prompt_str, 1).await;
-                println!(
-                    "\r                                                                               \r"
-                );
+                println!("\r \r");
 
                 let suggestions = match suggestions_result {
                     Ok(s) => s,
@@ -333,7 +367,6 @@ async fn main() -> anyhow::Result<()> {
                         return Err(e.into());
                     }
                 };
-
                 let new_commit_message =
                     suggestions.get(0).map(String::as_str).unwrap_or("").trim();
 
@@ -346,7 +379,7 @@ async fn main() -> anyhow::Result<()> {
                     ));
                 }
                 println!("✨ AI Suggests for amend: \"{}\"", new_commit_message);
-                match git::amend_commit(&current_repo_path, new_commit_message) {
+                match git::amend_commit(&repo_path, new_commit_message) {
                     Ok(commit_output) => {
                         println!("\n✅ Successfully amended commit with AI-generated message:");
                         println!("{}", commit_output);
@@ -360,8 +393,8 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 let num_variations_to_request = 5;
                 match interactive_commit_loop(
-                    &current_repo_path,
-                    &diff_text,
+                    &repo_path,
+                    &preprocessed_diff_text,
                     &changes_summary,
                     num_variations_to_request,
                     Some(&previous_commit_msg),
@@ -371,7 +404,7 @@ async fn main() -> anyhow::Result<()> {
                 {
                     Ok(Some(selected_message)) => {
                         println!("✨ You selected for amend: \"{}\"", selected_message);
-                        match git::amend_commit(&current_repo_path, &selected_message) {
+                        match git::amend_commit(&repo_path, &selected_message) {
                             Ok(commit_output) => {
                                 println!("\n✅ Successfully amended commit with selected message:");
                                 println!("{}", commit_output);
@@ -392,6 +425,5 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-
     Ok(())
 }

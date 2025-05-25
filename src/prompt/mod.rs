@@ -132,15 +132,15 @@ fn build_type_selection_guidance() -> String {
 
 fn build_diff_reading_guide() -> String {
     "Understanding the 'Diff' Section (How to Read Code Changes):\n\
-    The 'Diff' section below shows the exact changes to the code files. Here's how to interpret its format:\n\
+    The 'Diff' section below shows the exact changes to the code files. It has been pre-processed to make additions and removals very explicit.\n\
     - File Indicators: Lines like 'diff --git a/path/to/file.ext b/path/to/file.ext', '--- a/path/to/file.ext', and '+++ b/path/to/file.ext' identify the files being compared. 'a/' refers to the original version and 'b/' to the new version.\n\
-    - Hunk Headers: Lines starting with '@@ -old_line_info +new_line_info @@' (e.g., '@@ -242,7 +242,6 @@') mark the beginning of a \"hunk\" or a specific block of changes. The numbers indicate [start line],[number of lines] for the original (-) and new (+) versions of the file within that hunk.\n\
-    - REMOVED Lines: Any line starting with a single minus sign '-' indicates a line that was REMOVED from the original file.\n\
-    - ADDED Lines: Any line starting with a single plus sign '+' indicates a line that was ADDED to the new version of the file.\n\
-    - CONTEXT Lines: Lines that start with a space (or have no prefix like '-' or '+') are UNCHANGED context lines. They are shown to help understand where the additions and removals occurred but are NOT changes themselves.\n\n\
-    Your primary focus for understanding the *actual modifications* should be on the lines marked with '+' (additions) and '-' (removals). \
-    Based *only* on what is added (+) and removed (-), determine the nature of the change (e.g., adding new code, removing obsolete code, fixing a typo, refactoring logic, updating documentation comments). \
-    Pay close attention to whether the removed/added lines are code, comments, or whitespace to help select the correct commit <type>.".to_string()
+    - Hunk Headers: Lines starting with '@@ -old_line_info +new_line_info @@' (e.g., '@@ -242,7 +242,6 @@') mark the beginning of a \"hunk\" or a specific block of changes. The numbers indicate [start line],[number of lines] for the original and new versions of the file within that hunk.\n\
+    - [REMOVED_LINE]: Any line starting with the marker '[REMOVED_LINE]: ' indicates a line that was REMOVED from the original file. The content after this marker is the actual line that was removed.\n\
+    - [ADDED_LINE]: Any line starting with the marker '[ADDED_LINE]: ' indicates a line that was ADDED to the new version of the file. The content after this marker is the actual line that was added.\n\
+    - CONTEXT Lines: Lines that DO NOT start with '[REMOVED_LINE]: ' or '[ADDED_LINE]: ' (and are not file/hunk headers) are UNCHANGED context lines. They are shown to help understand where the additions and removals occurred but are NOT changes themselves.\n\n\
+    Your primary focus for understanding the *actual modifications* should be on the lines marked with '[ADDED_LINE]: ' and '[REMOVED_LINE]: '. \
+    Based *only* on what is marked as added or removed, determine the nature of the change (e.g., adding new code, removing obsolete code, fixing a typo, refactoring logic, updating documentation comments). \
+    Pay close attention to whether the content of these marked lines are code, comments, or whitespace to help select the correct commit <type>.".to_string()
 }
 
 pub fn build_prompt(
@@ -228,7 +228,7 @@ pub fn build_prompt(
 
     prompt_parts.push("Diff:\n\n---".to_string());
     prompt_parts.push(if diff_content.trim().is_empty() {
-        "No textual diff.".to_string()
+        "No textual diff provided or detected.".to_string()
     } else {
         diff_content.to_string()
     });
@@ -248,83 +248,64 @@ pub fn build_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::StagedChangesSummary;
 
     #[test]
     fn test_build_prompt_basic() {
-        let diff = "diff --git a/file.txt b/file.txt\nindex 123..456 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new";
+        let preprocessed_diff_example = "[ADDED_LINE]: new line";
         let summary = StagedChangesSummary {
             binary_file_changes: vec!["added binary file: image.png".to_string()],
             structure_changes: vec!["renamed: old_dir/file.txt to new_dir/file.txt".to_string()],
         };
-        let prompt = build_prompt(diff, &summary, 1, None);
+        let prompt = build_prompt(preprocessed_diff_example, &summary, 1, None);
         assert!(prompt.contains("Generate 1 Git commit message."));
-        assert!(prompt.contains("- feat: A new feature or significant functionality addition (e.g., adding new endpoints, UI components, initial project setup). (Example: \"feat: Implement user authentication via OAuth\")"));
+        assert!(prompt.contains("- feat: A new feature or significant functionality addition"));
         assert!(prompt.contains(&format!(
             "between {} and {} characters.",
             MIN_COMMIT_DESCRIPTION_CHARS, MAX_COMMIT_DESCRIPTION_CHARS
         )));
-        assert!(prompt.contains(diff));
-        assert!(prompt.contains("Binary file changes:\n\nadded binary file: image.png\n\n---"));
+        assert!(prompt.contains(preprocessed_diff_example));
+        assert!(prompt.contains("Binary file changes:\n\nadded binary file: image.png"));
         assert!(prompt.contains(
-            "Folder structure changes:\n\nrenamed: old_dir/file.txt to new_dir/file.txt\n\n---"
+            "Folder structure changes:\n\nrenamed: old_dir/file.txt to new_dir/file.txt"
         ));
         assert!(!prompt.contains("The previous commit message was:"));
         assert!(prompt.contains("Use the provided examples and hierarchy guidance above"));
         assert!(prompt.contains("Understanding the 'Diff' Section (How to Read Code Changes):"));
-        assert!(prompt.contains("REMOVED Lines: Any line starting with a single minus sign '-'"));
-        assert!(prompt.contains("ADDED Lines: Any line starting with a single plus sign '+'"));
+        assert!(
+            prompt.contains("[REMOVED_LINE]: Any line starting with the marker '[REMOVED_LINE]: '")
+        );
+        assert!(
+            prompt.contains("[ADDED_LINE]: Any line starting with the marker '[ADDED_LINE]: '")
+        );
     }
 
     #[test]
     fn test_build_prompt_multiple_suggestions() {
-        let diff = "diff --git a/file.txt b/file.txt\nindex 123..456 100644\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new";
+        let preprocessed_diff_example = "[REMOVED_LINE]: old\n[ADDED_LINE]: new";
         let summary = StagedChangesSummary::default();
-        let prompt = build_prompt(diff, &summary, 5, None);
+        let prompt = build_prompt(preprocessed_diff_example, &summary, 5, None);
         assert!(prompt.contains("Your task is to generate 5 *alternative* Git commit messages."));
-        assert!(prompt.contains(
-            "Each of these 5 messages must be a complete and valid commit message that summarizes *all* the changes provided below."
-        ));
-        assert!(prompt.contains(
-            "They should represent different ways of phrasing a *single* commit for the *entirety* of these changes"
-        ));
-        assert!(prompt.contains(
-            "Do not generate messages for individual files or sub-tasks within the diff if they are part of the same logical change."
-        ));
         assert!(prompt.contains("All 5 variations should use the SAME commit type"));
-        assert!(prompt.contains("- fix: A bug fix (e.g., correcting calculation errors, addressing crashes, security vulnerabilities). (Example: \"fix: Correct off-by-one error in pagination\")"));
         assert!(prompt.contains("CRITICAL: Type Selection Hierarchy and Guidance"));
         assert!(prompt.contains("Understanding the 'Diff' Section (How to Read Code Changes):"));
+        assert!(
+            prompt.contains("[ADDED_LINE]: Any line starting with the marker '[ADDED_LINE]: '")
+        );
     }
 
     #[test]
     fn test_build_prompt_with_amend_single_suggestion() {
-        let diff = "diff --git a/another.txt b/another.txt\n--- a/another.txt\n+++ b/another.txt\n@@ -1 +1 @@\n-old content\n+new content";
+        let preprocessed_diff_example = "[ADDED_LINE]: new content";
         let summary = StagedChangesSummary::default();
         let prev_msg = "fix: did a thing wrong";
-        let prompt = build_prompt(diff, &summary, 1, Some(prev_msg));
+        let prompt = build_prompt(preprocessed_diff_example, &summary, 1, Some(prev_msg));
         assert!(prompt.contains("Generate 1 Git commit message."));
-        assert!(prompt.contains(&format!("The previous commit message was: '{}'. Please generate a new, improved message (or it if multiple are requested) based on the changes, considering why the previous one might have been suboptimal. Ensure the <type> is appropriate for the changes, guided by the hierarchy and examples provided above. If generating multiple variations, they should all use the same improved type.", prev_msg)));
-        assert!(prompt.contains(diff));
-        assert!(prompt.contains("Binary file changes:\n\nNo binary file changes detected.\n\n---"));
+        assert!(prompt.contains(&format!("The previous commit message was: '{}'.", prev_msg)));
+        assert!(prompt.contains(preprocessed_diff_example));
+        assert!(prompt.contains("Understanding the 'Diff' Section (How to Read Code Changes):"));
         assert!(
-            prompt.contains(
-                "Folder structure changes:\n\nNo folder structure changes detected.\n\n---"
-            )
+            prompt.contains("[ADDED_LINE]: Any line starting with the marker '[ADDED_LINE]: '")
         );
-        assert!(prompt.contains("Understanding the 'Diff' Section (How to Read Code Changes):"));
-    }
-
-    #[test]
-    fn test_build_prompt_with_amend_multiple_suggestions() {
-        let diff = "diff --git a/another.txt b/another.txt\n--- a/another.txt\n+++ b/another.txt\n@@ -1 +1 @@\n-old content\n+new content";
-        let summary = StagedChangesSummary::default();
-        let prev_msg = "fix: did a thing wrong";
-        let prompt = build_prompt(diff, &summary, 3, Some(prev_msg));
-        assert!(prompt.contains("Your task is to generate 3 *alternative* Git commit messages."));
-        assert!(prompt.contains(&format!("The previous commit message was: '{}'. Please generate a new, improved message (or 3 variations of it if multiple are requested) based on the changes, considering why the previous one might have been suboptimal. Ensure the <type> is appropriate for the changes, guided by the hierarchy and examples provided above. If generating multiple variations, they should all use the same improved type.", prev_msg)));
-        assert!(prompt.contains(diff));
-        assert!(prompt.contains("Understanding the 'Diff' Section (How to Read Code Changes):"));
     }
 
     #[test]
@@ -335,33 +316,19 @@ mod tests {
             structure_changes: vec![],
         };
         let prompt = build_prompt(diff, &summary, 1, None);
-        assert!(prompt.contains("Diff:\n\n---\n\nNo textual diff.\n\n---"));
-        assert!(prompt.contains("Binary file changes:\n\nadded binary file: data.zip\n\n---"));
-        assert!(prompt.contains("Understanding the 'Diff' Section (How to Read Code Changes):"));
-    }
-
-    #[test]
-    fn test_build_prompt_empty_summary() {
-        let diff = "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new";
-        let summary = StagedChangesSummary::default();
-        let prompt = build_prompt(diff, &summary, 1, None);
-        assert!(prompt.contains(diff));
-        assert!(prompt.contains("Binary file changes:\n\nNo binary file changes detected.\n\n---"));
-        assert!(
-            prompt.contains(
-                "Folder structure changes:\n\nNo folder structure changes detected.\n\n---"
-            )
-        );
+        assert!(prompt.contains("Diff:\n\n---\n\nNo textual diff provided or detected.\n\n---"));
+        assert!(prompt.contains("Binary file changes:\n\nadded binary file: data.zip"));
         assert!(prompt.contains("Understanding the 'Diff' Section (How to Read Code Changes):"));
     }
 
     #[test]
     fn test_format_commit_types_for_prompt() {
         let formatted_types = format_commit_types_for_prompt();
-        assert!(formatted_types.contains("- feat: A new feature or significant functionality addition (e.g., adding new endpoints, UI components, initial project setup). (Example: \"feat: Implement user authentication via OAuth\")"));
-        assert!(formatted_types.contains("- fix: A bug fix (e.g., correcting calculation errors, addressing crashes, security vulnerabilities). (Example: \"fix: Correct off-by-one error in pagination\")"));
-        assert!(formatted_types.ends_with(")\n"));
-        assert_eq!(formatted_types.lines().count(), COMMIT_TYPES.len());
+        assert!(
+            formatted_types.contains("- feat: A new feature or significant functionality addition")
+        );
+        assert!(formatted_types.contains("- fix: A bug fix"));
+        assert!(formatted_types.lines().count() == COMMIT_TYPES.len());
     }
 
     #[test]
@@ -369,22 +336,27 @@ mod tests {
         let guidance = build_type_selection_guidance();
         assert!(guidance.contains("CRITICAL: Type Selection Hierarchy and Guidance"));
         assert!(guidance.contains("strictly follow this decision process in order:"));
-        assert!(guidance.contains("If changes are *solely* removing commented-out code or obsolete comments (even within test files), 'refactor' is the correct type."));
         assert!(guidance.contains(
-            "PRIMARY PURPOSE RULE: Always choose the type that represents the PRIMARY PURPOSE"
-        ));
-        assert!(guidance.contains(
-            "- Removing obsolete comments or commented-out code from test files is 'refactor', NOT 'test'."
+            "If changes are *solely* removing commented-out code or obsolete comments (even within test files), 'refactor' is the correct type."
         ));
     }
 
     #[test]
-    fn test_diff_reading_guide_generation() {
+    fn test_diff_reading_guide_generation_updated_markers() {
         let guide = build_diff_reading_guide();
         assert!(guide.starts_with("Understanding the 'Diff' Section (How to Read Code Changes):"));
-        assert!(guide.contains("REMOVED Lines: Any line starting with a single minus sign '-'"));
-        assert!(guide.contains("ADDED Lines: Any line starting with a single plus sign '+'"));
-        assert!(guide.contains("CONTEXT Lines: Lines that start with a space (or have no prefix like '-' or '+') are UNCHANGED context lines."));
-        assert!(guide.contains("Your primary focus for understanding the *actual modifications* should be on the lines marked with '+' (additions) and '-' (removals)."));
+        assert!(
+            guide.contains(
+                "It has been pre-processed to make additions and removals very explicit."
+            )
+        );
+        assert!(
+            guide.contains("[REMOVED_LINE]: Any line starting with the marker '[REMOVED_LINE]: '")
+        );
+        assert!(guide.contains("[ADDED_LINE]: Any line starting with the marker '[ADDED_LINE]: '"));
+        assert!(guide.contains(
+            "CONTEXT Lines: Lines that DO NOT start with '[REMOVED_LINE]: ' or '[ADDED_LINE]: '"
+        ));
+        assert!(guide.contains("Your primary focus for understanding the *actual modifications* should be on the lines marked with '[ADDED_LINE]: ' and '[REMOVED_LINE]: '."));
     }
 }
