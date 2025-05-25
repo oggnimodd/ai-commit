@@ -90,11 +90,78 @@ fn process_api_response_candidates(
                                     .trim();
                             }
 
-                            for line in processed_text.lines() {
-                                let trimmed_line = line.trim();
-                                if !trimmed_line.is_empty() && trimmed_line != "```" {
-                                    suggestions.push(trimmed_line.to_string());
+                            for line_str in processed_text.lines() {
+                                let mut current_suggestion = line_str.trim().to_string();
+
+                                if current_suggestion.is_empty() || current_suggestion == "```" {
+                                    continue;
                                 }
+
+                                if let Some(dot_pos) = current_suggestion.find(". ") {
+                                    if dot_pos > 0
+                                        && current_suggestion[..dot_pos]
+                                            .chars()
+                                            .all(|c| c.is_ascii_digit())
+                                    {
+                                        if current_suggestion.len() > dot_pos + 2 {
+                                            current_suggestion = current_suggestion[dot_pos + 2..]
+                                                .trim_start()
+                                                .to_string();
+                                        } else {
+                                            current_suggestion.clear();
+                                        }
+                                    }
+                                } else if current_suggestion.starts_with("- ")
+                                    || current_suggestion.starts_with("* ")
+                                {
+                                    if current_suggestion.len() > 2 {
+                                        current_suggestion =
+                                            current_suggestion[2..].trim_start().to_string();
+                                    } else {
+                                        current_suggestion.clear();
+                                    }
+                                } else if current_suggestion.to_lowercase().starts_with("however,")
+                                {
+                                    // Find the colon and extract everything after "however, ... : "
+                                    if let Some(colon_pos) = current_suggestion.find(": ") {
+                                        if current_suggestion.len() > colon_pos + 2 {
+                                            current_suggestion = current_suggestion
+                                                [colon_pos + 2..]
+                                                .trim()
+                                                .to_string();
+                                        }
+                                    }
+                                }
+                                current_suggestion = current_suggestion.trim().to_string();
+
+                                if current_suggestion.is_empty() {
+                                    continue;
+                                }
+
+                                let lower_line = current_suggestion.to_lowercase();
+                                if lower_line.starts_with("here are")
+                                    || lower_line.starts_with("sure,")
+                                    || lower_line.starts_with("okay,")
+                                    || lower_line.starts_with("response:")
+                                    || lower_line.starts_with("response:")
+                                    || lower_line.starts_with("given the")
+                                    || lower_line.starts_with("the ai suggests")
+                                    || lower_line.starts_with("i suggest")
+                                    || lower_line.contains("possible commit message")
+                                    || lower_line
+                                        .contains("commit message based on the provided diff")
+                                    || !current_suggestion.contains(':')
+                                {
+                                    continue;
+                                }
+
+                                if current_suggestion.len() > 200
+                                    && !current_suggestion.contains('\n')
+                                {
+                                    continue;
+                                }
+
+                                suggestions.push(current_suggestion);
                             }
                         }
                     }
@@ -108,9 +175,10 @@ fn process_api_response_candidates(
     }
 
     if suggestions.is_empty() {
-        bail!("No suggestions derived from API candidates after processing.");
+        bail!(
+            "No valid commit suggestions derived from AI response after filtering. The AI might have returned explanatory text instead of commit messages."
+        );
     }
-
     Ok(suggestions)
 }
 
@@ -118,8 +186,8 @@ pub async fn generate_text(prompt_text: &str, num_api_candidates: u32) -> Result
     let api_key =
         env::var("GEMINI_API_KEY").context("GEMINI_API_KEY environment variable not set.")?;
     let model_id = DEFAULT_GEMINI_MODEL_ID;
-
     let client = Client::new();
+
     let url = format!(
         "{}/{}:generateContent?key={}",
         GEMINI_API_BASE_URL, model_id, api_key
@@ -208,10 +276,11 @@ mod tests {
             println!("Skipping test_generate_single_suggestion_live: GEMINI_API_KEY not set.");
             return Ok(());
         }
-        let prompt = "Write a short poem about Rust programming.";
+        let prompt = "Write a short poem about Rust programming. Format as: poem: <text>";
         let suggestions = generate_text(prompt, 1).await?;
         assert_eq!(suggestions.len(), 1);
         assert!(!suggestions[0].is_empty());
+        assert!(suggestions[0].contains(':'));
         Ok(())
     }
 
@@ -222,12 +291,12 @@ mod tests {
             println!("Skipping test_generate_multiple_suggestions_live: GEMINI_API_KEY not set.");
             return Ok(());
         }
-        let prompt =
-            "Suggest three names for a new tech startup focused on AI. Each name on a new line.";
+        let prompt = "Suggest three names for a new tech startup focused on AI. Each name on a new line, formatted as name: <startup_name>.";
         let suggestions = generate_text(prompt, 3).await?;
         assert_eq!(suggestions.len(), 3);
         for suggestion in suggestions {
             assert!(!suggestion.is_empty());
+            assert!(suggestion.contains(':'));
         }
         Ok(())
     }
@@ -250,7 +319,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("No suggestions derived")
+                .contains("No valid commit suggestions derived")
         );
 
         let result_empty_vec = process_api_response_candidates(Some(vec![]), 3);
@@ -259,7 +328,7 @@ mod tests {
             result_empty_vec
                 .unwrap_err()
                 .to_string()
-                .contains("No suggestions derived")
+                .contains("No valid commit suggestions derived")
         );
     }
 
@@ -289,8 +358,27 @@ mod tests {
     }
 
     #[test]
+    fn test_process_stripping_list_markers_and_preambles() {
+        let text_block = "Here are some suggestions:\n1. feat: First item\n- fix: Second item\n* chore: Third item\n  docs: Fourth item with space";
+        let candidates = vec![create_mock_candidate(text_block)];
+        let result = process_api_response_candidates(Some(candidates), 4).unwrap();
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], "feat: First item");
+        assert_eq!(result[1], "fix: Second item");
+        assert_eq!(result[2], "chore: Third item");
+        assert_eq!(result[3], "docs: Fourth item with space");
+
+        let text_block_mixed = "Okay, here's what I came up with:\nfeat: Valid one\nSome other text that should be ignored.\n2. fix: Another valid one";
+        let candidates_mixed = vec![create_mock_candidate(text_block_mixed)];
+        let result_mixed = process_api_response_candidates(Some(candidates_mixed), 2).unwrap();
+        assert_eq!(result_mixed.len(), 2);
+        assert_eq!(result_mixed[0], "feat: Valid one");
+        assert_eq!(result_mixed[1], "fix: Another valid one");
+    }
+
+    #[test]
     fn test_process_stray_markdown_fences_and_empty_lines() {
-        let text_block = "```\nfeat: Valid one\n\n```\nfix: Valid two\n  ```  \nchore: Valid three";
+        let text_block = "```\nfeat: Valid one\n\n```\nfix: Valid two\n ``` \nchore: Valid three";
         let candidates = vec![create_mock_candidate(text_block)];
         let result = process_api_response_candidates(Some(candidates), 3).unwrap();
         assert_eq!(result.len(), 3);
@@ -302,22 +390,38 @@ mod tests {
     #[test]
     fn test_process_truncation() {
         let candidates = vec![
-            create_mock_candidate("s1"),
-            create_mock_candidate("s2\ns3"),
-            create_mock_candidate("s4\ns5\ns6"),
+            create_mock_candidate("feat: s1"),
+            create_mock_candidate("fix: s2\nchore: s3"),
+            create_mock_candidate("docs: s4\nstyle: s5\nrefactor: s6"),
         ];
         let result = process_api_response_candidates(Some(candidates), 3).unwrap();
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0], "s1");
-        assert_eq!(result[1], "s2");
-        assert_eq!(result[2], "s3");
+        assert_eq!(result[0], "feat: s1");
+        assert_eq!(result[1], "fix: s2");
+        assert_eq!(result[2], "chore: s3");
 
-        let result_request_more_than_available =
-            process_api_response_candidates(Some(vec![create_mock_candidate("one\ntwo")]), 5)
-                .unwrap();
+        let result_request_more_than_available = process_api_response_candidates(
+            Some(vec![create_mock_candidate("feat: one\nfix: two")]),
+            5,
+        )
+        .unwrap();
         assert_eq!(result_request_more_than_available.len(), 2);
-        assert_eq!(result_request_more_than_available[0], "one");
-        assert_eq!(result_request_more_than_available[1], "two");
+        assert_eq!(result_request_more_than_available[0], "feat: one");
+        assert_eq!(result_request_more_than_available[1], "fix: two");
+    }
+
+    #[test]
+    fn test_process_filter_out_verbose_non_commits() {
+        let text_block = "Given the lack of specific code changes, it's impossible to provide a more targeted commit message.\nHowever, here is a generic one: chore: Update documentation";
+        let candidates = vec![create_mock_candidate(text_block)];
+        let result = process_api_response_candidates(Some(candidates), 1).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], "chore: Update documentation");
+
+        let text_block_no_valid = "This is just some random text without a colon.";
+        let candidates_no_valid = vec![create_mock_candidate(text_block_no_valid)];
+        let result_no_valid = process_api_response_candidates(Some(candidates_no_valid), 1);
+        assert!(result_no_valid.is_err());
     }
 
     #[test]

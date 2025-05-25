@@ -2,6 +2,7 @@ use anyhow::{Context, bail};
 use clap::Parser;
 use inquire::{InquireError, Select};
 use std::env;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 mod ai;
@@ -58,11 +59,25 @@ async fn interactive_commit_loop(
             num_variations_to_request,
             previous_message,
         );
-        println!(
-            "🤖 Generating {} {} commit message variations from AI...",
-            num_variations_to_request, mode_description
+
+        print!(
+            "🤖 Generating {} {}commit message variations from AI... ",
+            num_variations_to_request,
+            if mode_description.is_empty() {
+                "".to_string()
+            } else {
+                format!("{} ", mode_description)
+            }
         );
-        let suggestions = match ai::generate_text(&prompt_str, num_variations_to_request).await {
+        io::stdout().flush()?;
+
+        let suggestions_result = ai::generate_text(&prompt_str, num_variations_to_request).await;
+
+        println!(
+            "\r                                                                               \r"
+        );
+
+        let suggestions = match suggestions_result {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Error generating commit messages from AI: {}", e);
@@ -71,13 +86,13 @@ async fn interactive_commit_loop(
                     Ok(REGENERATE_OPTION) => continue,
                     Ok(CANCEL_OPTION) | Err(InquireError::OperationCanceled) => return Ok(None),
                     Ok(_) => unreachable!(),
-                    Err(e) => return Err(e.into()),
+                    Err(ie) => return Err(ie.into()),
                 }
             }
         };
 
         if suggestions.is_empty() {
-            eprintln!("❌ AI returned no suggestions.");
+            eprintln!("❌ AI returned no valid suggestions after filtering.");
             let empty_options = vec![REGENERATE_OPTION, CANCEL_OPTION];
             match Select::new(
                 "AI returned no suggestions. What would you like to do?",
@@ -88,7 +103,7 @@ async fn interactive_commit_loop(
                 Ok(REGENERATE_OPTION) => continue,
                 Ok(CANCEL_OPTION) | Err(InquireError::OperationCanceled) => return Ok(None),
                 Ok(_) => unreachable!(),
-                Err(e) => return Err(e.into()),
+                Err(ie) => return Err(ie.into()),
             }
         }
 
@@ -123,7 +138,6 @@ async fn interactive_commit_loop(
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mode = args.determine_mode();
-    println!("ai-commit is running in: {:?}", mode);
 
     let current_repo_path = env::current_dir().context("Failed to get current directory")?;
 
@@ -170,23 +184,34 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let prompt_str = prompt::build_prompt(&diff_text, &changes_summary, 1, None);
-            println!("🤖 Generating commit message from AI...");
-            let suggestions = match ai::generate_text(&prompt_str, 1).await {
+
+            print!("🤖 Generating commit message from AI... ");
+            io::stdout().flush()?;
+
+            let suggestions_result = ai::generate_text(&prompt_str, 1).await;
+            println!(
+                "\r                                                                               \r"
+            );
+
+            let suggestions = match suggestions_result {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Error generating commit message from AI: {}", e);
-                    return Err(e);
+                    return Err(e.into());
                 }
             };
 
             let commit_message = suggestions.get(0).map(String::as_str).unwrap_or("").trim();
 
             if commit_message.is_empty() {
-                eprintln!("❌ AI returned an empty or invalid commit message. Cannot commit.");
+                eprintln!(
+                    "❌ AI returned an empty or invalid commit message after filtering. Cannot commit."
+                );
                 return Err(anyhow::anyhow!(
                     "AI returned an empty or invalid commit message."
                 ));
             }
+
             println!("✨ AI Suggests: \"{}\"", commit_message);
 
             match git::commit_staged_files(&current_repo_path, commit_message) {
@@ -292,25 +317,35 @@ async fn main() -> anyhow::Result<()> {
                     1,
                     Some(&previous_commit_msg),
                 );
-                println!("🤖 Generating new commit message for amend (auto)...");
-                let suggestions = match ai::generate_text(&prompt_str, 1).await {
+
+                print!("🤖 Generating new commit message for amend (auto)... ");
+                io::stdout().flush()?;
+
+                let suggestions_result = ai::generate_text(&prompt_str, 1).await;
+                println!(
+                    "\r                                                                               \r"
+                );
+
+                let suggestions = match suggestions_result {
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("Error generating commit message from AI for amend: {}", e);
-                        return Err(e);
+                        return Err(e.into());
                     }
                 };
+
                 let new_commit_message =
                     suggestions.get(0).map(String::as_str).unwrap_or("").trim();
 
                 if new_commit_message.is_empty() {
-                    eprintln!("❌ AI returned an empty or invalid commit message. Cannot amend.");
+                    eprintln!(
+                        "❌ AI returned an empty or invalid commit message for amend after filtering. Cannot amend."
+                    );
                     return Err(anyhow::anyhow!(
                         "AI returned an empty or invalid commit message for amend."
                     ));
                 }
                 println!("✨ AI Suggests for amend: \"{}\"", new_commit_message);
-
                 match git::amend_commit(&current_repo_path, new_commit_message) {
                     Ok(commit_output) => {
                         println!("\n✅ Successfully amended commit with AI-generated message:");

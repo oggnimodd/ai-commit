@@ -20,11 +20,14 @@ fn execute_git_command(repo_path: &Path, args: &[&str]) -> Result<Output, anyhow
         })?;
 
     if !output.status.success() {
-        let stdout_str = str::from_utf8(&output.stdout)
-            .unwrap_or("[non-utf8 stdout]")
-            .trim();
         let stderr_str = str::from_utf8(&output.stderr)
             .unwrap_or("[non-utf8 stderr]")
+            .trim();
+        if stderr_str.contains("fatal: not a git repository") {
+            bail!("Not a git repository.");
+        }
+        let stdout_str = str::from_utf8(&output.stdout)
+            .unwrap_or("[non-utf8 stdout]")
             .trim();
         bail!(
             "Git command '{}' failed in {:?} with status {}:\nStdout: {}\nStderr: {}",
@@ -81,6 +84,9 @@ fn execute_git_command_for_summary_bytes(
         let stderr_str = str::from_utf8(&output.stderr)
             .unwrap_or("[non-utf8 stderr summary]")
             .trim();
+        if stderr_str.contains("fatal: not a git repository") {
+            bail!("Not a git repository.");
+        }
         bail!(
             "Git summary command '{}' failed in {:?} with status {}:\nStderr: {}",
             command_str,
@@ -347,7 +353,6 @@ pub fn commit_staged_files(repo_path: &Path, message: &str) -> Result<String, an
     }
     let output = execute_git_command(repo_path, &["commit", "-m", message])
         .context("Failed to commit staged files")?;
-
     let stdout_str = str::from_utf8(&output.stdout)
         .unwrap_or("[non-utf8 stdout from git commit]")
         .trim();
@@ -389,20 +394,16 @@ pub fn amend_commit(repo_path: &Path, message: &str) -> Result<String, anyhow::E
     if message.trim().is_empty() {
         bail!("Commit message for amend cannot be empty.");
     }
-
     let output = execute_git_command(repo_path, &["commit", "--amend", "-m", message])
         .with_context(|| {
             format!(
                 "Failed to execute 'git commit --amend -m \"{}\"' in {:?}",
-                message, // The commit message variable
-                repo_path
+                message, repo_path
             )
         })?;
-
     let stdout_str = str::from_utf8(&output.stdout)
         .unwrap_or("[non-utf8 stdout from git commit --amend]")
         .trim();
-
     Ok(stdout_str.to_string())
 }
 
@@ -441,7 +442,6 @@ mod tests {
         if !output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-
             if !(command_str == "git"
                 && args.contains(&"commit")
                 && (stderr.contains("nothing to commit")
@@ -604,6 +604,7 @@ mod tests {
             diff_result.err()
         );
         let diff = diff_result.unwrap();
+
         assert!(diff.contains("--- a/modified.txt"));
         assert!(diff.contains("+++ b/modified.txt"));
         assert!(diff.contains("-line1"));
@@ -763,7 +764,6 @@ mod tests {
         )?;
 
         let summary = get_staged_changes_summary(repo_path)?;
-
         let mut expected_binary =
             vec!["renamed binary file: old_dir/file2.bin to new_dir/file2.bin".to_string()];
         expected_binary.sort();
@@ -840,7 +840,6 @@ mod tests {
         setup_git_repo(repo_path)?;
         create_and_commit_file(repo_path, "src/old_file.bin", &[0x01, 0x00, 0x02, 0xAB])?;
         stage_rename(repo_path, "src/old_file.bin", "src/new_file.bin")?;
-
         let summary = get_staged_changes_summary(repo_path)?;
         let expected = StagedChangesSummary {
             binary_file_changes: vec![
@@ -860,8 +859,8 @@ mod tests {
         setup_git_repo(repo_path)?;
         stage_new_file(repo_path, "commit_me.txt", b"content to commit")?;
         let commit_message = "feat: Add commit_me.txt";
-
         let commit_output = commit_staged_files(repo_path, commit_message)?;
+
         assert!(
             commit_output.contains("main") || commit_output.contains("master"),
             "Commit output did not contain branch name: {}",
@@ -923,7 +922,6 @@ mod tests {
             "git",
             &["commit", "--amend", "-m", initial_commit_message],
         )?;
-
         let message = get_previous_commit_message(repo_path)?;
         assert_eq!(message, Some(initial_commit_message.to_string()));
         temp_dir.close()?;
@@ -943,7 +941,6 @@ mod tests {
             "git",
             &["commit", "--amend", "-m", initial_commit_message],
         )?;
-
         let message = get_previous_commit_message(repo_path)?;
         assert_eq!(message, Some(initial_commit_message.to_string()));
         temp_dir.close()?;
@@ -955,10 +952,8 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let repo_path = temp_dir.path();
         setup_git_repo(repo_path)?;
-
         let result = amend_commit(repo_path, "fix: Amending non-existent commit");
         assert!(result.is_err());
-
         if let Err(e) = result {
             let err_string_lower = e.to_string().to_lowercase();
             assert!(
@@ -971,21 +966,18 @@ mod tests {
                 "Error message did not contain 'failed'. Actual: {}",
                 err_string_lower
             );
-            // More flexible check for git-related errors
             assert!(
-                err_string_lower.contains("needed a single revision") 
-                || err_string_lower.contains("no commits yet") 
-                || err_string_lower.contains("does not have any commits yet")
-                || err_string_lower.contains("bad default revision")
-                || err_string_lower.contains("ambiguous argument 'head'")
-                || err_string_lower.contains("unknown revision")
-                // Add a more general check that catches the actual error
-                || (err_string_lower.contains("git") && err_string_lower.contains("amend")),
+                err_string_lower.contains("needed a single revision")
+                    || err_string_lower.contains("no commits yet")
+                    || err_string_lower.contains("does not have any commits yet")
+                    || err_string_lower.contains("bad default revision")
+                    || err_string_lower.contains("ambiguous argument 'head'")
+                    || err_string_lower.contains("unknown revision")
+                    || (err_string_lower.contains("git") && err_string_lower.contains("amend")),
                 "Error message did not contain expected git error. Actual: {}",
                 err_string_lower
             );
         }
-
         temp_dir.close()?;
         Ok(())
     }
@@ -996,11 +988,10 @@ mod tests {
         let repo_path = temp_dir.path();
         setup_git_repo(repo_path)?;
         create_and_commit_file(repo_path, "first.txt", b"content1")?;
-
         stage_file_changes(repo_path, "first.txt", b"updated content1")?;
+
         let amend_message = "fix: Update first.txt with new content";
         let amend_output = amend_commit(repo_path, amend_message)?;
-
         assert!(
             amend_output.contains("1 file changed")
                 || amend_output.contains(amend_message)
