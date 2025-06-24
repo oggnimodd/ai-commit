@@ -3,7 +3,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
 
-const DEFAULT_GEMINI_MODEL_ID: &str = "gemini-2.5-flash-preview-05-20";
+const DEFAULT_GEMINI_MODEL_ID: &str = "gemini-2.5-flash-lite-preview-06-17";
 const GEMINI_API_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
 #[derive(Serialize)]
